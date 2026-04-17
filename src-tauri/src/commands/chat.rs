@@ -58,10 +58,11 @@ pub async fn send_message(
         .db
         .query(
             "CREATE message SET
-                room    = type::record('room', $room_id),
-                author  = $auth,
-                body    = $body,
-                created = time::now()",
+                room            = type::record('room', $room_id),
+                author          = $auth,
+                author_username = $auth.username,
+                body            = $body,
+                created         = time::now()",
         )
         .bind(("room_id", room_id))
         .bind(("body", body))
@@ -81,7 +82,7 @@ pub async fn get_messages(
 ) -> Result<Vec<Message>, String> {
     let result: Vec<Message> = state
         .db
-        .query("SELECT *, author.username AS author_username FROM message WHERE room = type::record('room', $room_id) ORDER BY created ASC")
+        .query("SELECT * FROM message WHERE room = type::record('room', $room_id) ORDER BY created ASC")
         .bind(("room_id", room_id))
         .await
         .map_err(into_err)?
@@ -121,7 +122,7 @@ pub async fn subscribe_room(
     let db = state.db.clone();
 
     let mut stream = db
-        .query("LIVE SELECT *, author.username AS author_username FROM message WHERE room = type::record('room', $room_id)")
+        .query("LIVE SELECT * FROM message WHERE room = type::record('room', $room_id)")
         .bind(("room_id", room_id))
         .await
         .map_err(into_err)?
