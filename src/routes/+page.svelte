@@ -36,7 +36,7 @@
   // ─── Auth ─────────────────────────────────────────────────────────────────
   async function init() {
     try {
-      user = await cmd<User>('get_me');
+      user = await cmd<User>('restore_session');
       view = 'app';
       await loadRooms();
       contacts = await cmd<User[]>('get_contacts').catch(() => []);
