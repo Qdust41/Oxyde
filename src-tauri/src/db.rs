@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, LazyLock};
 use std::env;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use surrealdb::engine::remote::ws::{Client, Ws, Wss};
 use surrealdb::Surreal;
@@ -13,26 +13,24 @@ use crate::error::AppError;
 pub static SURREAL_URL: LazyLock<String> = LazyLock::new(|| {
     option_env!("SURREAL_URL")
         .map(str::to_string)
-        .unwrap_or_else(|| env::var("SURREAL_URL")
-            .unwrap_or_else(|_| "ws://localhost:8000".to_string()))
+        .unwrap_or_else(|| {
+            env::var("SURREAL_URL").unwrap_or_else(|_| "ws://localhost:8000".to_string())
+        })
 });
 pub static SURREAL_NS: LazyLock<String> = LazyLock::new(|| {
     option_env!("SURREAL_NS")
         .map(str::to_string)
-        .unwrap_or_else(|| env::var("SURREAL_NS")
-            .unwrap_or_else(|_| "dev".to_string()))
+        .unwrap_or_else(|| env::var("SURREAL_NS").unwrap_or_else(|_| "dev".to_string()))
 });
 pub static SURREAL_DB: LazyLock<String> = LazyLock::new(|| {
     option_env!("SURREAL_DB")
         .map(str::to_string)
-        .unwrap_or_else(|| env::var("SURREAL_DB")
-            .unwrap_or_else(|_| "oxyde".to_string()))
+        .unwrap_or_else(|| env::var("SURREAL_DB").unwrap_or_else(|_| "oxyde".to_string()))
 });
 pub static SURREAL_ACCESS: LazyLock<String> = LazyLock::new(|| {
     option_env!("SURREAL_ACCESS")
         .map(str::to_string)
-        .unwrap_or_else(|| env::var("SURREAL_ACCESS")
-            .unwrap_or_else(|_| "account".to_string()))
+        .unwrap_or_else(|| env::var("SURREAL_ACCESS").unwrap_or_else(|_| "account".to_string()))
 });
 
 pub struct AppState {
