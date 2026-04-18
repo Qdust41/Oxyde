@@ -1,7 +1,7 @@
 {
   "name": "oxyde",
-  "version": "0.1.0",
-  "description": "",
+  "version": "0.1.1",
+  "description": "A simple Tauri chat app, built with rust, vite, and surrealdb",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
