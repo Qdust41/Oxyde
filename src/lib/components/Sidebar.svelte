@@ -13,6 +13,8 @@
     onCreateRoom: () => void;
     onSignout: () => void;
     onShowMenu: (e: MouseEvent, items: ContextMenuItem[]) => void;
+    onUpdateProfile: (fields: { username?: string; avatar?: string }) => Promise<void>;
+    onAddContact: (userId: string) => Promise<void>;
   }
 
   let {
@@ -26,7 +28,48 @@
     onCreateRoom,
     onSignout,
     onShowMenu,
+    onUpdateProfile,
+    onAddContact,
   }: Props = $props();
+
+  // ── Profile edit ──────────────────────────────────────────────────────────
+  let showEditProfile  = $state(false);
+  let fProfileUsername = $state('');
+  let fProfileAvatar   = $state('');
+  let profileErr       = $state('');
+
+  function openEditProfile() {
+    fProfileUsername = user?.username ?? '';
+    fProfileAvatar   = user?.avatar   ?? '';
+    profileErr = '';
+    showEditProfile = true;
+  }
+
+  async function submitProfile() {
+    profileErr = '';
+    try {
+      await onUpdateProfile({
+        username: fProfileUsername.trim() || undefined,
+        avatar:   fProfileAvatar.trim()   || undefined,
+      });
+      showEditProfile = false;
+    } catch (e) { profileErr = String(e); }
+  }
+
+  // ── Add contact ───────────────────────────────────────────────────────────
+  let showAddContact = $state(false);
+  let fContactId     = $state('');
+  let contactErr     = $state('');
+
+  async function submitContact() {
+    if (!fContactId.trim()) return;
+    contactErr = '';
+    try {
+      await onAddContact(fContactId.trim());
+      fContactId = '';
+      showAddContact = false;
+    } catch (e) { contactErr = String(e); }
+  }
 </script>
 
 <aside class="sidebar">
@@ -68,8 +111,21 @@
   </nav>
 
   <!-- Contacts -->
+  <div class="section-label-row">
+    <span class="section-label">CONTACTS</span>
+    <button class="icon-btn" title="Add contact" onclick={() => { showAddContact = !showAddContact; }}>
+      {showAddContact ? '×' : '+'}
+    </button>
+  </div>
+  {#if showAddContact}
+    <div class="new-room-form">
+      <input class="field-sm" placeholder="user id" bind:value={fContactId}
+        onkeydown={(e) => e.key === 'Enter' && submitContact()} />
+      <button class="btn-xs" onclick={submitContact}>add</button>
+    </div>
+    {#if contactErr}<p class="form-err" style="padding: 0 12px 6px">{contactErr}</p>{/if}
+  {/if}
   {#if contacts.length > 0}
-    <div class="section-label">CONTACTS</div>
     <div class="contact-list">
       {#each contacts as c}
         <div class="contact-item">
@@ -81,11 +137,26 @@
   {/if}
 
   <!-- User footer -->
+  {#if showEditProfile}
+    <div class="edit-profile-form">
+      <input class="field-sm" placeholder="username" bind:value={fProfileUsername}
+        onkeydown={(e) => e.key === 'Enter' && submitProfile()}
+        onkeyup={(e) => e.key === 'Escape' && (showEditProfile = false)} />
+      <input class="field-sm" placeholder="avatar url (optional)" bind:value={fProfileAvatar}
+        onkeydown={(e) => e.key === 'Enter' && submitProfile()}
+        onkeyup={(e) => e.key === 'Escape' && (showEditProfile = false)} />
+      {#if profileErr}<p class="form-err">{profileErr}</p>{/if}
+      <div class="form-row">
+        <button class="btn-xs" onclick={submitProfile}>save</button>
+        <button class="btn-xs btn-ghost" onclick={() => showEditProfile = false}>cancel</button>
+      </div>
+    </div>
+  {/if}
   <div class="user-footer">
-    <div class="user-pill">
+    <button class="user-pill" title="Edit profile" onclick={openEditProfile}>
       <span class="avatar">{user?.username?.[0]?.toUpperCase() ?? '?'}</span>
       <span class="user-name">{user?.username ?? ''}</span>
-    </div>
+    </button>
     <button class="icon-btn signout" title="Sign out" onclick={onSignout}>
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
@@ -202,7 +273,34 @@
     border-top: 1px solid var(--border);
     background: var(--surface); margin-top: auto;
   }
-  .user-pill { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .user-pill {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    background: none; border: none; cursor: pointer; padding: 0;
+    font-family: inherit; text-align: left;
+  }
+  .user-pill:hover .user-name { color: var(--text); }
+
+  .section-label-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 14px 5px 14px;
+  }
+  .section-label-row .section-label { padding: 0; }
+
+  .edit-profile-form {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border-subtle);
+    animation: rise 0.15s ease;
+  }
+  .form-row { display: flex; gap: 6px; }
+  .btn-ghost {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+  }
+  .btn-ghost:hover { opacity: 0.8; border-color: var(--muted); }
+  .form-err {
+    font-size: 10px; color: var(--danger);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .avatar {
     width: 26px; height: 26px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;

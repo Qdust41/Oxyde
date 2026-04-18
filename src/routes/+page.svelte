@@ -117,6 +117,23 @@
     } catch (e) { err = String(e); }
   }
 
+  async function deleteMessage(msgId: string) {
+    err = '';
+    try {
+      await cmd('delete_message', { messageId: msgId });
+      messages = messages.filter(m => full(m.id) !== msgId);
+    } catch (e) { err = String(e); }
+  }
+
+  async function updateProfile(fields: { username?: string; avatar?: string }) {
+    user = await cmd<User>('update_profile', fields);
+  }
+
+  async function addContact(userId: string) {
+    await cmd('add_contact', { userId });
+    contacts = await cmd<User[]>('get_contacts').catch(() => []);
+  }
+
   onMount(init);
   onDestroy(async () => {
     if (subId)   await cmd('unsubscribe_room', { subId }).catch(() => {});
@@ -152,13 +169,17 @@
       onCreateRoom={createRoom}
       onSignout={signout}
       onShowMenu={showMenu}
+      onUpdateProfile={updateProfile}
+      onAddContact={addContact}
     />
     <ChatMain
       {activeRoom}
       {messages}
+      {user}
       {err}
       bind:fMsg
       onSendMessage={sendMessage}
+      onDeleteMessage={deleteMessage}
       onShowMenu={showMenu}
     />
   </div>

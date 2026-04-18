@@ -1,23 +1,27 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Room, Message, ContextMenuItem } from '$lib/types';
+  import type { User, Room, Message, ContextMenuItem } from '$lib/types';
   import { full, sid, fmt } from '$lib/helpers';
 
   interface Props {
     activeRoom: Room | null;
     messages: Message[];
+    user: User | null;
     err: string;
     fMsg: string;
     onSendMessage: () => void;
+    onDeleteMessage: (msgId: string) => void;
     onShowMenu: (e: MouseEvent, items: ContextMenuItem[]) => void;
   }
 
   let {
     activeRoom,
     messages,
+    user,
     err,
     fMsg      = $bindable(),
     onSendMessage,
+    onDeleteMessage,
     onShowMenu,
   }: Props = $props();
 
@@ -81,7 +85,15 @@
         <div
           class="msg"
           class:grouped={isGrouped(i)}
-          oncontextmenu={(e) => onShowMenu(e, [{ label: 'Copy message', action: () => navigator.clipboard.writeText(msg.body) }])}
+          oncontextmenu={(e) => {
+            const items: ContextMenuItem[] = [
+              { label: 'Copy message', action: () => navigator.clipboard.writeText(msg.body) },
+            ];
+            if (user && full(msg.author) === full(user.id)) {
+              items.push({ label: 'Delete message', action: () => onDeleteMessage(full(msg.id)) });
+            }
+            onShowMenu(e, items);
+          }}
         >
           {#if !isGrouped(i)}
             <div class="msg-header">
