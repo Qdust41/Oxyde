@@ -37,6 +37,7 @@ pub fn run() {
             commands::user::signin,
             commands::user::signout,
             commands::user::get_me,
+            commands::user::restore_session,
             commands::user::update_profile,
             commands::user::get_contacts,
             commands::user::add_contact,
