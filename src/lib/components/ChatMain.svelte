@@ -99,7 +99,10 @@
             <div class="msg-header">
               <span
                 class="msg-author"
-                oncontextmenu={(e) => { e.stopPropagation(); onShowMenu(e, [{ label: 'Copy username', action: () => navigator.clipboard.writeText(msg.author_username ?? sid(msg.author)) }]); }}
+                oncontextmenu={(e) => { e.stopPropagation(); onShowMenu(e, [
+                  { label: 'Copy username', action: () => navigator.clipboard.writeText(msg.author_username ?? sid(msg.author)) },
+                  { label: 'Copy user ID',  action: () => navigator.clipboard.writeText(sid(msg.author)) },
+                ]); }}
               >{msg.author_username ?? sid(msg.author)}</span>
               <span class="msg-time">{fmt(msg.created)}</span>
             </div>
