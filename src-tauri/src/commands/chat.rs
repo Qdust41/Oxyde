@@ -6,9 +6,9 @@ use surrealdb::Notification;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::db::AppState;
 use crate::error::{into_err, AppError};
 use crate::models::{Message, MessageReaction, MessageReactionSummary, Room, User};
+use crate::AppState;
 
 const DEFAULT_PAGE_SIZE: i64 = 50;
 const MAX_PAGE_SIZE: i64 = 100;

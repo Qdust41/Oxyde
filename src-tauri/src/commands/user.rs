@@ -1,9 +1,10 @@
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
-use crate::db::{AppState, SURREAL_ACCESS, SURREAL_DB, SURREAL_NS};
+use crate::db::{SURREAL_ACCESS, SURREAL_DB, SURREAL_NS};
 use crate::error::{into_err, AppError};
 use crate::models::{Contact, User};
+use crate::AppState;
 
 const SESSION_STORE: &str = "session.json";
 const TOKEN_KEY: &str = "token";
@@ -86,7 +87,6 @@ pub async fn signup(
     };
     let token = state.db.signup(credentials).await.map_err(into_err)?;
     let token_str = token.access.into_insecure_token();
-    *state.token.lock().unwrap() = Some(token_str.clone());
     save_token(&app_handle, &token_str)?;
 
     let mut result: Vec<User> = state
@@ -130,7 +130,6 @@ pub async fn signin(
         .map_err(into_err)?
         .access
         .into_insecure_token();
-    *state.token.lock().unwrap() = Some(token_str.clone());
     save_token(&app_handle, &token_str)?;
     Ok(token_str)
 }
@@ -139,7 +138,6 @@ pub async fn signin(
 #[tauri::command]
 pub async fn signout(state: State<'_, AppState>, app_handle: AppHandle) -> Result<(), String> {
     state.db.invalidate().await.map_err(into_err)?;
-    *state.token.lock().unwrap() = None;
     clear_token(&app_handle)?;
     Ok(())
 }
@@ -162,8 +160,6 @@ pub async fn restore_session(
         .await
     {
         Ok(_) => {
-            *state.token.lock().unwrap() = Some(token_str);
-
             let mut result: Vec<User> = state
                 .db
                 .query("SELECT * FROM $auth")
@@ -178,7 +174,6 @@ pub async fn restore_session(
         }
         Err(_) => {
             let _ = clear_token(&app_handle);
-            *state.token.lock().unwrap() = None;
             Err(AppError::Auth("session expired, please sign in again".into()).to_string())
         }
     }

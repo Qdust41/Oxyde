@@ -1,15 +1,11 @@
-use std::collections::HashMap;
 use std::env;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::LazyLock;
 
 use surrealdb::engine::remote::ws::{Client, Ws, Wss};
 use surrealdb::Surreal;
-use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 use crate::error::AppError;
 
-// This should set the env variable correctly both during compile time and runtime (for development).
 pub static SURREAL_URL: LazyLock<String> = LazyLock::new(|| {
     option_env!("SURREAL_URL")
         .map(str::to_string)
@@ -32,19 +28,6 @@ pub static SURREAL_ACCESS: LazyLock<String> = LazyLock::new(|| {
         .map(str::to_string)
         .unwrap_or_else(|| env::var("SURREAL_ACCESS").unwrap_or_else(|_| "account".to_string()))
 });
-
-pub struct AppState {
-    /// Long-lived authenticated WebSocket connection to SurrealDB.
-    pub db: Arc<Surreal<Client>>,
-    /// JWT token from Record Auth signin. Used to re-authenticate on reconnect.
-    /// std::sync::Mutex is intentional: lock is acquired and released before any .await.
-    pub token: Mutex<Option<String>>,
-    /// Active LIVE query tasks keyed by their SurrealDB LIVE query UUID.
-    /// Abort a handle + KILL the query to clean up.
-    /// std::sync::Mutex is intentional: guards are never held across .await points.
-    /// If a future command needs to lock across .await, switch to tokio::sync::Mutex.
-    pub subscriptions: Mutex<HashMap<Uuid, JoinHandle<()>>>,
-}
 
 /// Connect to SurrealDB over WebSocket and select namespace/database.
 /// URL may include protocol prefix: `ws://`, `wss://`, `http://`, or `https://`.

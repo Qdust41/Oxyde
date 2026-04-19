@@ -1,14 +1,24 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use surrealdb::engine::remote::ws::Client;
+use surrealdb::Surreal;
 use tauri::Manager;
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 mod commands;
 mod db;
 mod error;
 mod models;
 
-use db::{init_db, AppState, SURREAL_DB, SURREAL_NS, SURREAL_URL};
+use db::{init_db, SURREAL_DB, SURREAL_NS, SURREAL_URL};
+
+pub struct AppState {
+    pub db: Arc<Surreal<Client>>,
+    /// std::sync::Mutex is intentional: guards are never held across .await points.
+    pub subscriptions: Mutex<HashMap<Uuid, JoinHandle<()>>>,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,7 +38,6 @@ pub fn run() {
 
                 let state = AppState {
                     db: Arc::new(surreal),
-                    token: Mutex::new(None),
                     subscriptions: Mutex::new(HashMap::new()),
                 };
 
