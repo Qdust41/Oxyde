@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use futures_util::StreamExt;
+use surrealdb::types::{RecordId, RecordIdKey};
 use surrealdb::Notification;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
@@ -48,6 +49,46 @@ fn validate_message_body(body: &str) -> Result<(), String> {
         .to_string());
     }
     Ok(())
+}
+
+fn record_key_string(id: &RecordId) -> String {
+    match &id.key {
+        RecordIdKey::String(value) => value.clone(),
+        RecordIdKey::Number(value) => value.to_string(),
+        RecordIdKey::Uuid(value) => value.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+fn user_record_key(user_id: &str) -> String {
+    let user_id = user_id.trim();
+    if let Some((table, key)) = user_id.split_once(':') {
+        if table == "user" {
+            return format!("user:{key}");
+        }
+    }
+
+    format!("user:{user_id}")
+}
+
+fn user_id_key(user_id: &str) -> String {
+    let user_id = user_id.trim();
+    if let Some((table, key)) = user_id.split_once(':') {
+        if table == "user" {
+            return key.to_string();
+        }
+    }
+
+    user_id.to_string()
+}
+
+fn direct_room_key(current_user: &RecordId, target_user_id: &str) -> String {
+    let mut participants = [
+        user_record_key(&record_key_string(current_user)),
+        user_record_key(target_user_id),
+    ];
+    participants.sort();
+    participants.join("|")
 }
 
 async fn current_user(state: &State<'_, AppState>) -> Result<User, String> {
@@ -129,6 +170,26 @@ async fn hydrate_direct_rooms(
     Ok(())
 }
 
+fn dedupe_direct_rooms(rooms: Vec<Room>) -> Vec<Room> {
+    let mut seen_direct_users = HashMap::new();
+    let mut deduped = Vec::with_capacity(rooms.len());
+
+    for room in rooms {
+        if room.kind == "direct" {
+            if let Some(other_user) = &room.other_user {
+                let key = user_record_key(&record_key_string(&other_user.id));
+                if seen_direct_users.insert(key, ()).is_some() {
+                    continue;
+                }
+            }
+        }
+
+        deduped.push(room);
+    }
+
+    deduped
+}
+
 /// Create a new chat room and add the creator as owner.
 #[tauri::command]
 pub async fn create_room(
@@ -197,7 +258,7 @@ pub async fn get_rooms(state: State<'_, AppState>) -> Result<Vec<Room>, String> 
         .map_err(into_err)?;
 
     hydrate_direct_rooms(&state, &mut result).await?;
-    Ok(result)
+    Ok(dedupe_direct_rooms(result))
 }
 
 /// Add a user to a room. Room owners can invite others.
@@ -232,16 +293,15 @@ pub async fn get_or_create_direct_room(
     user_id: String,
 ) -> Result<Room, String> {
     let me = current_user(&state).await?;
-    let me_key =
-        serde_json::to_string(&me.id).map_err(|e| into_err(AppError::Auth(e.to_string())))?;
-    let target_key = serde_json::json!({
-        "table": "user",
-        "key": { "String": user_id.clone() }
-    })
-    .to_string();
-    let mut participants = [me_key, target_key];
-    participants.sort();
-    let direct_key = participants.join("|");
+    let target_user_id = user_id_key(&user_id);
+    let current_user_key = record_key_string(&me.id);
+    if user_record_key(&current_user_key) == user_record_key(&target_user_id) {
+        return Err(
+            AppError::Auth("cannot start a direct message with yourself".into()).to_string(),
+        );
+    }
+
+    let direct_key = direct_room_key(&me.id, &target_user_id);
 
     let mut existing: Vec<Room> = state
         .db
@@ -253,6 +313,27 @@ pub async fn get_or_create_direct_room(
         .map_err(into_err)?;
 
     if let Some(mut room) = existing.pop() {
+        hydrate_direct_rooms(&state, std::slice::from_mut(&mut room)).await?;
+        return Ok(room);
+    }
+
+    let mut existing_by_members: Vec<Room> = state
+        .db
+        .query(
+            "SELECT * FROM room
+             WHERE kind = 'direct'
+               AND id IN (SELECT VALUE room FROM room_member WHERE user = $auth)
+               AND id IN (SELECT VALUE room FROM room_member WHERE user = type::record('user', $user_id))
+             ORDER BY updated DESC, created DESC
+             LIMIT 1",
+        )
+        .bind(("user_id", target_user_id.clone()))
+        .await
+        .map_err(into_err)?
+        .take(0)
+        .map_err(into_err)?;
+
+    if let Some(mut room) = existing_by_members.pop() {
         hydrate_direct_rooms(&state, std::slice::from_mut(&mut room)).await?;
         return Ok(room);
     }
@@ -285,7 +366,7 @@ pub async fn get_or_create_direct_room(
              CREATE room_member SET room = $room, user = type::record('user', $user_id), role = 'member', joined = time::now(), muted = false;",
         )
         .bind(("room", room.id.clone()))
-        .bind(("user_id", user_id))
+        .bind(("user_id", target_user_id))
         .await
         .map_err(into_err)?;
 
