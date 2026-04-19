@@ -136,11 +136,19 @@
 
         activeRoom = room;
         replyTo = null;
-        messages = await cmd<Message[]>("get_messages", {
+
+        const cached = await cmd<Message[]>("get_cached_messages", { roomId: sid(room.id) });
+        if (cached.length > 0) {
+            messages = cached;
+            hasOlderMessages = false;
+        }
+
+        const fresh = await cmd<Message[]>("get_messages", {
             roomId: sid(room.id),
             limit: 50,
         });
-        hasOlderMessages = messages.length === 50;
+        messages = fresh;
+        hasOlderMessages = fresh.length === 50;
         unreadCounts = { ...unreadCounts, [sid(room.id)]: 0 };
         await cmd("mark_room_read", { roomId: sid(room.id) }).catch(() => {});
 

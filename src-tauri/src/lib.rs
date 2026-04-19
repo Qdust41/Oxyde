@@ -13,9 +13,15 @@ mod error;
 mod models;
 
 use db::{init_db, SURREAL_DB, SURREAL_NS, SURREAL_URL};
+use models::Message;
 
 pub struct AppState {
     pub db: Arc<Surreal<Client>>,
+    /// In-process message cache keyed by room_id string. Arc so the live-event
+    /// task in subscribe_room can hold a reference without borrowing AppState.
+    pub msg_cache: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    /// LRU order of cached room IDs (front = most recent). Evicts beyond 5.
+    pub cache_order: Arc<Mutex<Vec<String>>>,
     /// std::sync::Mutex is intentional: guards are never held across .await points.
     pub subscriptions: Mutex<HashMap<Uuid, JoinHandle<()>>>,
 }
@@ -38,6 +44,8 @@ pub fn run() {
 
                 let state = AppState {
                     db: Arc::new(surreal),
+                    msg_cache: Arc::new(Mutex::new(HashMap::new())),
+                    cache_order: Arc::new(Mutex::new(Vec::new())),
                     subscriptions: Mutex::new(HashMap::new()),
                 };
 
@@ -61,6 +69,7 @@ pub fn run() {
             commands::chat::get_or_create_direct_room,
             commands::chat::send_message,
             commands::chat::get_messages,
+            commands::chat::get_cached_messages,
             commands::chat::delete_message,
             commands::chat::edit_message,
             commands::chat::toggle_reaction,
