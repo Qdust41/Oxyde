@@ -26,6 +26,7 @@
     let hasOlderMessages = $state(false);
     let isLoadingOlder = $state(false);
     let unreadCounts = $state<Record<string, number>>({});
+    let roomSelectionToken = 0;
 
     let view = $state<"loading" | "auth" | "app">("loading");
     let authMode = $state<"signin" | "signup">("signin");
@@ -101,6 +102,7 @@
     }
 
     async function signout() {
+        roomSelectionToken += 1;
         await cmd("signout").catch(() => {});
         if (subId) {
             await cmd("unsubscribe_room", { subId }).catch(() => {});
@@ -119,42 +121,72 @@
     }
 
     // ─── Rooms ────────────────────────────────────────────────────────────────
+    function isCurrentRoomSelection(token: number, roomId: string) {
+        return (
+            token === roomSelectionToken &&
+            activeRoom !== null &&
+            sid(activeRoom.id) === roomId
+        );
+    }
+
+    function onlyRoomMessages(roomId: string, source: Message[]) {
+        return source.filter((message) => sid(message.room) === roomId);
+    }
+
     async function loadRooms() {
         rooms = await cmd<Room[]>("get_rooms");
         if (rooms.length && !activeRoom) await selectRoom(rooms[0]);
     }
 
     async function selectRoom(room: Room) {
-        if (subId) {
-            await cmd("unsubscribe_room", { subId }).catch(() => {});
-            subId = null;
-        }
-        if (unlisten) {
-            unlisten();
-            unlisten = null;
-        }
+        const token = ++roomSelectionToken;
+        const roomId = sid(room.id);
+        const previousSubId = subId;
+        const previousUnlisten = unlisten;
+
+        subId = null;
+        unlisten = null;
 
         activeRoom = room;
+        messages = [];
+        hasOlderMessages = false;
+        isLoadingOlder = false;
         replyTo = null;
 
-        const cached = await cmd<Message[]>("get_cached_messages", { roomId: sid(room.id) });
+        if (previousSubId) {
+            await cmd("unsubscribe_room", { subId: previousSubId }).catch(() => {});
+        }
+        if (previousUnlisten) {
+            previousUnlisten();
+        }
+        if (token !== roomSelectionToken) return;
+
+        const cached = await cmd<Message[]>("get_cached_messages", { roomId });
+        if (!isCurrentRoomSelection(token, roomId)) return;
         if (cached.length > 0) {
-            messages = cached;
+            messages = onlyRoomMessages(roomId, cached);
             hasOlderMessages = false;
         }
 
         const fresh = await cmd<Message[]>("get_messages", {
-            roomId: sid(room.id),
+            roomId,
             limit: 50,
         });
-        messages = fresh;
+        if (!isCurrentRoomSelection(token, roomId)) return;
+        messages = onlyRoomMessages(roomId, fresh);
         hasOlderMessages = fresh.length === 50;
-        unreadCounts = { ...unreadCounts, [sid(room.id)]: 0 };
-        await cmd("mark_room_read", { roomId: sid(room.id) }).catch(() => {});
+        unreadCounts = { ...unreadCounts, [roomId]: 0 };
+        await cmd("mark_room_read", { roomId }).catch(() => {});
+        if (!isCurrentRoomSelection(token, roomId)) return;
 
-        subId = await cmd<string>("subscribe_room", { roomId: sid(room.id) });
+        const nextSubId = await cmd<string>("subscribe_room", { roomId });
+        if (!isCurrentRoomSelection(token, roomId)) {
+            await cmd("unsubscribe_room", { subId: nextSubId }).catch(() => {});
+            return;
+        }
+        subId = nextSubId;
         const { listen } = await import("@tauri-apps/api/event");
-        unlisten = await listen<LiveEvent>("chat:message", ({ payload }) => {
+        const nextUnlisten = await listen<LiveEvent>("chat:message", ({ payload }) => {
             const { action, data } = payload;
             const eventRoomId = sid(data.room);
             const currentRoomId = activeRoom ? sid(activeRoom.id) : "";
@@ -185,6 +217,15 @@
             }
             cmd("mark_room_read", { roomId: currentRoomId }).catch(() => {});
         });
+        if (!isCurrentRoomSelection(token, roomId)) {
+            nextUnlisten();
+            if (subId === nextSubId) {
+                await cmd("unsubscribe_room", { subId: nextSubId }).catch(() => {});
+                subId = null;
+            }
+            return;
+        }
+        unlisten = nextUnlisten;
     }
 
     async function loadOlderMessages() {
@@ -195,19 +236,24 @@
             messages.length === 0
         )
             return;
+        const roomId = sid(activeRoom.id);
+        const token = roomSelectionToken;
         isLoadingOlder = true;
         try {
             const older = await cmd<Message[]>("get_messages", {
-                roomId: sid(activeRoom.id),
+                roomId,
                 before: messages[0].created,
                 limit: 50,
             });
-            messages = [...older, ...messages];
+            if (!isCurrentRoomSelection(token, roomId)) return;
+            messages = [...onlyRoomMessages(roomId, older), ...messages];
             hasOlderMessages = older.length === 50;
         } catch (e) {
             err = String(e);
         } finally {
-            isLoadingOlder = false;
+            if (isCurrentRoomSelection(token, roomId)) {
+                isLoadingOlder = false;
+            }
         }
     }
 
@@ -275,10 +321,15 @@
         try {
             await cmd("toggle_reaction", { messageId: msgId, emoji });
             if (activeRoom) {
-                messages = await cmd<Message[]>("get_messages", {
-                    roomId: sid(activeRoom.id),
+                const roomId = sid(activeRoom.id);
+                const token = roomSelectionToken;
+                const refreshed = await cmd<Message[]>("get_messages", {
+                    roomId,
                     limit: Math.max(50, Math.min(messages.length, 100)),
                 });
+                if (isCurrentRoomSelection(token, roomId)) {
+                    messages = onlyRoomMessages(roomId, refreshed);
+                }
             }
         } catch (e) {
             err = String(e);
