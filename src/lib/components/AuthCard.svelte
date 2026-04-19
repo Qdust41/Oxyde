@@ -25,7 +25,7 @@
 <div class="auth-wrap">
   <div class="auth-card">
     <h1 class="auth-brand">OXYDE</h1>
-    <p class="auth-tagline">encrypted · realtime · distributed</p>
+    <p class="auth-tagline">realtime · native · focused</p>
 
     {#if err}
       <div class="err-banner">{err}</div>

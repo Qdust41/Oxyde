@@ -1,11 +1,18 @@
-use tauri::{AppHandle, Emitter, State};
-use uuid::Uuid;
+use std::collections::HashMap;
+
 use futures_util::StreamExt;
 use surrealdb::Notification;
+use tauri::{AppHandle, Emitter, State};
+use uuid::Uuid;
 
 use crate::db::AppState;
 use crate::error::{into_err, AppError};
-use crate::models::{Message, Room};
+use crate::models::{Message, MessageReaction, MessageReactionSummary, Room, User};
+
+const DEFAULT_PAGE_SIZE: i64 = 50;
+const MAX_PAGE_SIZE: i64 = 100;
+const MAX_MESSAGE_LEN: usize = 4000;
+const MAX_ROOM_NAME_LEN: usize = 80;
 
 /// Wrapper emitted to the frontend for each LIVE query notification.
 /// Includes the action type so the frontend can distinguish create/update/delete.
@@ -15,36 +22,276 @@ struct LiveMessageEvent<'a> {
     data: &'a Message,
 }
 
-/// Create a new chat room.
+fn validate_room_name(name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Auth("room name is required".into()).to_string());
+    }
+    if trimmed.chars().count() > MAX_ROOM_NAME_LEN {
+        return Err(AppError::Auth(format!(
+            "room name must be {MAX_ROOM_NAME_LEN} characters or less"
+        ))
+        .to_string());
+    }
+    Ok(())
+}
+
+fn validate_message_body(body: &str) -> Result<(), String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Auth("message cannot be empty".into()).to_string());
+    }
+    if trimmed.chars().count() > MAX_MESSAGE_LEN {
+        return Err(AppError::Auth(format!(
+            "message must be {MAX_MESSAGE_LEN} characters or less"
+        ))
+        .to_string());
+    }
+    Ok(())
+}
+
+async fn current_user(state: &State<'_, AppState>) -> Result<User, String> {
+    let mut result: Vec<User> = state
+        .db
+        .query("SELECT * FROM $auth")
+        .await
+        .map_err(into_err)?
+        .take(0)
+        .map_err(into_err)?;
+
+    result
+        .pop()
+        .ok_or_else(|| into_err(AppError::Auth("not authenticated".into())))
+}
+
+async fn hydrate_reactions(
+    state: &State<'_, AppState>,
+    user: &User,
+    messages: &mut [Message],
+) -> Result<(), String> {
+    for message in messages {
+        let reactions: Vec<MessageReaction> = state
+            .db
+            .query("SELECT * FROM message_reaction WHERE message = $message")
+            .bind(("message", message.id.clone()))
+            .await
+            .map_err(into_err)?
+            .take(0)
+            .map_err(into_err)?;
+
+        let mut grouped: HashMap<String, MessageReactionSummary> = HashMap::new();
+        for reaction in reactions {
+            let entry = grouped
+                .entry(reaction.emoji.clone())
+                .or_insert(MessageReactionSummary {
+                    emoji: reaction.emoji,
+                    count: 0,
+                    reacted_by_me: false,
+                });
+            entry.count += 1;
+            if reaction.user == user.id {
+                entry.reacted_by_me = true;
+            }
+        }
+
+        let mut summaries: Vec<MessageReactionSummary> = grouped.into_values().collect();
+        summaries.sort_by(|a, b| a.emoji.cmp(&b.emoji));
+        message.reactions = Some(summaries);
+    }
+
+    Ok(())
+}
+
+async fn hydrate_direct_rooms(
+    state: &State<'_, AppState>,
+    rooms: &mut [Room],
+) -> Result<(), String> {
+    for room in rooms.iter_mut().filter(|room| room.kind == "direct") {
+        let mut users: Vec<User> = state
+            .db
+            .query(
+                "SELECT * FROM user
+                 WHERE id IN (
+                    SELECT VALUE user FROM room_member
+                    WHERE room = $room AND user != $auth
+                 )
+                 LIMIT 1",
+            )
+            .bind(("room", room.id.clone()))
+            .await
+            .map_err(into_err)?
+            .take(0)
+            .map_err(into_err)?;
+
+        room.other_user = users.pop();
+    }
+
+    Ok(())
+}
+
+/// Create a new chat room and add the creator as owner.
 #[tauri::command]
 pub async fn create_room(
     state: State<'_, AppState>,
     name: String,
+    kind: Option<String>,
 ) -> Result<Room, String> {
+    validate_room_name(&name)?;
+    let room_kind = kind.unwrap_or_else(|| "public".to_string());
+    if !matches!(room_kind.as_str(), "public" | "private") {
+        return Err(AppError::Auth("room kind must be public or private".into()).to_string());
+    }
+
     let mut result: Vec<Room> = state
         .db
-        .query("CREATE room SET name = $name, created = time::now()")
-        .bind(("name", name))
+        .query(
+            "CREATE room SET
+                name       = $name,
+                kind       = $kind,
+                created_by = $auth,
+                created    = time::now(),
+                updated    = time::now()",
+        )
+        .bind(("name", name.trim().to_string()))
+        .bind(("kind", room_kind))
         .await
         .map_err(into_err)?
         .take(0)
         .map_err(into_err)?;
 
-    result.pop().ok_or_else(|| into_err(AppError::NotFound("room after create".into())))
+    let room = result
+        .pop()
+        .ok_or_else(|| into_err(AppError::NotFound("room after create".into())))?;
+
+    state
+        .db
+        .query(
+            "CREATE room_member SET
+                room         = $room,
+                user         = $auth,
+                role         = 'owner',
+                joined       = time::now(),
+                last_read_at = time::now(),
+                muted        = false",
+        )
+        .bind(("room", room.id.clone()))
+        .await
+        .map_err(into_err)?;
+
+    Ok(room)
 }
 
-/// Fetch all rooms.
+/// Fetch public rooms and rooms the current user belongs to.
 #[tauri::command]
 pub async fn get_rooms(state: State<'_, AppState>) -> Result<Vec<Room>, String> {
-    let result: Vec<Room> = state
+    let mut result: Vec<Room> = state
         .db
-        .query("SELECT * FROM room ORDER BY created DESC")
+        .query(
+            "SELECT * FROM room
+             WHERE kind = 'public' OR id IN (SELECT VALUE room FROM room_member WHERE user = $auth)
+             ORDER BY updated DESC, created DESC",
+        )
         .await
         .map_err(into_err)?
         .take(0)
         .map_err(into_err)?;
 
+    hydrate_direct_rooms(&state, &mut result).await?;
     Ok(result)
+}
+
+/// Add a user to a room. Room owners can invite others.
+#[tauri::command]
+pub async fn invite_to_room(
+    state: State<'_, AppState>,
+    room_id: String,
+    user_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .query(
+            "CREATE room_member SET
+                room         = type::record('room', $room_id),
+                user         = type::record('user', $user_id),
+                role         = 'member',
+                joined       = time::now(),
+                muted        = false",
+        )
+        .bind(("room_id", room_id))
+        .bind(("user_id", user_id))
+        .await
+        .map_err(into_err)?;
+
+    Ok(())
+}
+
+/// Return an existing direct room for two users or create it.
+#[tauri::command]
+pub async fn get_or_create_direct_room(
+    state: State<'_, AppState>,
+    user_id: String,
+) -> Result<Room, String> {
+    let me = current_user(&state).await?;
+    let me_key =
+        serde_json::to_string(&me.id).map_err(|e| into_err(AppError::Auth(e.to_string())))?;
+    let target_key = serde_json::json!({
+        "table": "user",
+        "key": { "String": user_id.clone() }
+    })
+    .to_string();
+    let mut participants = [me_key, target_key];
+    participants.sort();
+    let direct_key = participants.join("|");
+
+    let mut existing: Vec<Room> = state
+        .db
+        .query("SELECT * FROM room WHERE kind = 'direct' AND direct_key = $direct_key LIMIT 1")
+        .bind(("direct_key", direct_key.clone()))
+        .await
+        .map_err(into_err)?
+        .take(0)
+        .map_err(into_err)?;
+
+    if let Some(mut room) = existing.pop() {
+        hydrate_direct_rooms(&state, std::slice::from_mut(&mut room)).await?;
+        return Ok(room);
+    }
+
+    let mut created: Vec<Room> = state
+        .db
+        .query(
+            "CREATE room SET
+                name       = NONE,
+                kind       = 'direct',
+                direct_key = $direct_key,
+                created_by = $auth,
+                created    = time::now(),
+                updated    = time::now()",
+        )
+        .bind(("direct_key", direct_key))
+        .await
+        .map_err(into_err)?
+        .take(0)
+        .map_err(into_err)?;
+
+    let room = created
+        .pop()
+        .ok_or_else(|| into_err(AppError::NotFound("direct room after create".into())))?;
+
+    state
+        .db
+        .query(
+            "CREATE room_member SET room = $room, user = $auth, role = 'owner', joined = time::now(), last_read_at = time::now(), muted = false;
+             CREATE room_member SET room = $room, user = type::record('user', $user_id), role = 'member', joined = time::now(), muted = false;",
+        )
+        .bind(("room", room.id.clone()))
+        .bind(("user_id", user_id))
+        .await
+        .map_err(into_err)?;
+
+    let mut room = room;
+    hydrate_direct_rooms(&state, std::slice::from_mut(&mut room)).await?;
+    Ok(room)
 }
 
 /// Send a message to a room.
@@ -53,55 +300,181 @@ pub async fn send_message(
     state: State<'_, AppState>,
     room_id: String,
     body: String,
+    reply_to: Option<String>,
 ) -> Result<Message, String> {
-    let mut result: Vec<Message> = state
-        .db
-        .query(
-            "CREATE message SET
+    validate_message_body(&body)?;
+
+    let query = if reply_to.is_some() {
+        "CREATE message SET
                 room            = type::record('room', $room_id),
                 author          = $auth,
                 author_username = $auth.username,
                 body            = $body,
-                created         = time::now()",
-        )
+                reply_to        = type::record('message', $reply_to),
+                deleted         = false,
+                created         = time::now();
+             UPDATE type::record('room', $room_id) SET updated = time::now();"
+    } else {
+        "CREATE message SET
+                room            = type::record('room', $room_id),
+                author          = $auth,
+                author_username = $auth.username,
+                body            = $body,
+                deleted         = false,
+                created         = time::now();
+             UPDATE type::record('room', $room_id) SET updated = time::now();"
+    };
+
+    let mut response = state
+        .db
+        .query(query)
         .bind(("room_id", room_id))
-        .bind(("body", body))
+        .bind(("body", body.trim().to_string()));
+
+    if let Some(reply_to) = reply_to {
+        response = response.bind(("reply_to", reply_to));
+    }
+
+    let mut result: Vec<Message> = response
         .await
         .map_err(into_err)?
         .take(0)
         .map_err(into_err)?;
 
-    result.pop().ok_or_else(|| into_err(AppError::NotFound("message after create".into())))
+    result
+        .pop()
+        .ok_or_else(|| into_err(AppError::NotFound("message after create".into())))
 }
 
-/// Fetch all messages in a room, oldest first.
+/// Fetch a bounded page of messages in a room, oldest first.
 #[tauri::command]
 pub async fn get_messages(
     state: State<'_, AppState>,
     room_id: String,
+    before: Option<String>,
+    limit: Option<i64>,
 ) -> Result<Vec<Message>, String> {
-    let result: Vec<Message> = state
+    let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+    let query = if before.is_some() {
+        "SELECT * FROM message
+         WHERE room = type::record('room', $room_id) AND created < <datetime>$before
+         ORDER BY created DESC
+         LIMIT $limit"
+    } else {
+        "SELECT * FROM message
+         WHERE room = type::record('room', $room_id)
+         ORDER BY created DESC
+         LIMIT $limit"
+    };
+
+    let mut response = state
         .db
-        .query("SELECT * FROM message WHERE room = type::record('room', $room_id) ORDER BY created ASC")
+        .query(query)
         .bind(("room_id", room_id))
+        .bind(("limit", limit));
+
+    if let Some(before) = before {
+        response = response.bind(("before", before));
+    }
+
+    let mut result: Vec<Message> = response
         .await
         .map_err(into_err)?
         .take(0)
         .map_err(into_err)?;
 
+    result.reverse();
+    let user = current_user(&state).await?;
+    hydrate_reactions(&state, &user, &mut result).await?;
     Ok(result)
 }
 
-/// Delete a message by its ID string (e.g. "message:abc123").
+/// Soft-delete a message by its ID string.
 #[tauri::command]
-pub async fn delete_message(
-    state: State<'_, AppState>,
-    message_id: String,
-) -> Result<(), String> {
+pub async fn delete_message(state: State<'_, AppState>, message_id: String) -> Result<(), String> {
     state
         .db
-        .query("DELETE type::record($id) WHERE author = $auth")
+        .query("UPDATE type::record($id) SET deleted = true, body = '', updated = time::now() WHERE author = $auth")
         .bind(("id", message_id))
+        .await
+        .map_err(into_err)?;
+
+    Ok(())
+}
+
+/// Edit the current user's message.
+#[tauri::command]
+pub async fn edit_message(
+    state: State<'_, AppState>,
+    message_id: String,
+    body: String,
+) -> Result<Message, String> {
+    validate_message_body(&body)?;
+    let mut result: Vec<Message> = state
+        .db
+        .query("UPDATE type::record($id) SET body = $body, updated = time::now() WHERE author = $auth RETURN AFTER")
+        .bind(("id", message_id))
+        .bind(("body", body.trim().to_string()))
+        .await
+        .map_err(into_err)?
+        .take(0)
+        .map_err(into_err)?;
+
+    result
+        .pop()
+        .ok_or_else(|| into_err(AppError::NotFound("message".into())))
+}
+
+/// Toggle one emoji reaction for the current user.
+#[tauri::command]
+pub async fn toggle_reaction(
+    state: State<'_, AppState>,
+    message_id: String,
+    emoji: String,
+) -> Result<(), String> {
+    let emoji = emoji.trim();
+    if emoji.is_empty() || emoji.chars().count() > 16 {
+        return Err(AppError::Auth("invalid reaction".into()).to_string());
+    }
+
+    let existing: Vec<MessageReaction> = state
+        .db
+        .query("SELECT * FROM message_reaction WHERE message = type::record($message_id) AND user = $auth AND emoji = $emoji")
+        .bind(("message_id", message_id.clone()))
+        .bind(("emoji", emoji.to_string()))
+        .await
+        .map_err(into_err)?
+        .take(0)
+        .map_err(into_err)?;
+
+    if existing.is_empty() {
+        state
+            .db
+            .query("CREATE message_reaction SET message = type::record($message_id), user = $auth, emoji = $emoji, created = time::now()")
+            .bind(("message_id", message_id))
+            .bind(("emoji", emoji.to_string()))
+            .await
+            .map_err(into_err)?;
+    } else {
+        state
+            .db
+            .query("DELETE message_reaction WHERE message = type::record($message_id) AND user = $auth AND emoji = $emoji")
+            .bind(("message_id", message_id))
+            .bind(("emoji", emoji.to_string()))
+            .await
+            .map_err(into_err)?;
+    }
+
+    Ok(())
+}
+
+/// Mark the room read for the current user.
+#[tauri::command]
+pub async fn mark_room_read(state: State<'_, AppState>, room_id: String) -> Result<(), String> {
+    state
+        .db
+        .query("UPDATE room_member SET last_read_at = time::now() WHERE room = type::record('room', $room_id) AND user = $auth")
+        .bind(("room_id", room_id))
         .await
         .map_err(into_err)?;
 
@@ -133,10 +506,13 @@ pub async fn subscribe_room(
 
     let handle = tokio::spawn(async move {
         while let Some(Ok(notification)) = stream.next().await {
-            let _ = app_handle.emit("chat:message", &LiveMessageEvent {
-                action: format!("{:?}", notification.action),
-                data: &notification.data,
-            });
+            let _ = app_handle.emit(
+                "chat:message",
+                &LiveMessageEvent {
+                    action: format!("{:?}", notification.action),
+                    data: &notification.data,
+                },
+            );
         }
     });
 
@@ -148,10 +524,7 @@ pub async fn subscribe_room(
 /// Stop a LIVE query subscription.
 /// Aborts the background task — dropping the stream closes the LIVE query.
 #[tauri::command]
-pub async fn unsubscribe_room(
-    state: State<'_, AppState>,
-    sub_id: String,
-) -> Result<(), String> {
+pub async fn unsubscribe_room(state: State<'_, AppState>, sub_id: String) -> Result<(), String> {
     let uuid = sub_id
         .parse::<Uuid>()
         .map_err(|e| into_err(AppError::Subscription(e.to_string())))?;

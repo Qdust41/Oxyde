@@ -18,9 +18,13 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
-                let surreal = init_db(SURREAL_URL.as_str(), SURREAL_NS.as_str(), SURREAL_DB.as_str())
-                    .await
-                    .expect("Failed to connect to SurrealDB");
+                let surreal = init_db(
+                    SURREAL_URL.as_str(),
+                    SURREAL_NS.as_str(),
+                    SURREAL_DB.as_str(),
+                )
+                .await
+                .expect("Failed to connect to SurrealDB");
 
                 let state = AppState {
                     db: Arc::new(surreal),
@@ -39,13 +43,19 @@ pub fn run() {
             commands::user::get_me,
             commands::user::restore_session,
             commands::user::update_profile,
+            commands::user::search_users,
             commands::user::get_contacts,
             commands::user::add_contact,
             commands::chat::create_room,
             commands::chat::get_rooms,
+            commands::chat::invite_to_room,
+            commands::chat::get_or_create_direct_room,
             commands::chat::send_message,
             commands::chat::get_messages,
             commands::chat::delete_message,
+            commands::chat::edit_message,
+            commands::chat::toggle_reaction,
+            commands::chat::mark_room_read,
             commands::chat::subscribe_room,
             commands::chat::unsubscribe_room,
         ])

@@ -7,6 +7,58 @@ use crate::models::{Contact, User};
 
 const SESSION_STORE: &str = "session.json";
 const TOKEN_KEY: &str = "token";
+const MIN_PASSWORD_LEN: usize = 8;
+const MAX_USERNAME_LEN: usize = 32;
+const MAX_EMAIL_LEN: usize = 254;
+
+fn validate_email(email: &str) -> Result<(), String> {
+    let email = email.trim();
+    if email.is_empty() || email.len() > MAX_EMAIL_LEN || !email.contains('@') {
+        return Err(AppError::Auth("enter a valid email address".into()).to_string());
+    }
+    Ok(())
+}
+
+fn validate_password(password: &str) -> Result<(), String> {
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err(AppError::Auth(format!(
+            "password must be at least {MIN_PASSWORD_LEN} characters"
+        ))
+        .to_string());
+    }
+    Ok(())
+}
+
+fn validate_username(username: &str) -> Result<(), String> {
+    let username = username.trim();
+    if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
+        return Err(
+            AppError::Auth(format!("username must be 1-{MAX_USERNAME_LEN} characters")).to_string(),
+        );
+    }
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(
+            AppError::Auth("username can use letters, numbers, _, -, and .".into()).to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_avatar(avatar: &Option<String>) -> Result<(), String> {
+    if let Some(avatar) = avatar {
+        let avatar = avatar.trim();
+        if !avatar.is_empty() && !(avatar.starts_with("https://") || avatar.starts_with("http://"))
+        {
+            return Err(
+                AppError::Auth("avatar must be a valid http or https URL".into()).to_string(),
+            );
+        }
+    }
+    Ok(())
+}
 
 /// Create a new user account via SurrealDB Record Auth SIGNUP.
 /// Returns the created User record. Persists the JWT token to disk.
@@ -18,13 +70,17 @@ pub async fn signup(
     username: String,
     password: String,
 ) -> Result<User, String> {
+    validate_email(&email)?;
+    validate_username(&username)?;
+    validate_password(&password)?;
+
     let credentials = surrealdb::opt::auth::Record {
         access: SURREAL_ACCESS.to_string(),
         namespace: SURREAL_NS.to_string(),
         database: SURREAL_DB.to_string(),
         params: serde_json::json!({
-            "email": email,
-            "username": username,
+            "email": email.trim(),
+            "username": username.trim(),
             "password": password,
         }),
     };
@@ -41,7 +97,9 @@ pub async fn signup(
         .take(0)
         .map_err(into_err)?;
 
-    result.pop().ok_or_else(|| into_err(AppError::Auth("signup succeeded but $auth not set".into())))
+    result
+        .pop()
+        .ok_or_else(|| into_err(AppError::Auth("signup succeeded but $auth not set".into())))
 }
 
 /// Authenticate an existing user via SurrealDB Record Auth SIGNIN.
@@ -53,16 +111,25 @@ pub async fn signin(
     email: String,
     password: String,
 ) -> Result<String, String> {
+    validate_email(&email)?;
+    validate_password(&password)?;
+
     let credentials = surrealdb::opt::auth::Record {
         access: SURREAL_ACCESS.to_string(),
         namespace: SURREAL_NS.to_string(),
         database: SURREAL_DB.to_string(),
         params: serde_json::json!({
-            "email": email,
+            "email": email.trim(),
             "password": password,
         }),
     };
-    let token_str = state.db.signin(credentials).await.map_err(into_err)?.access.into_insecure_token();
+    let token_str = state
+        .db
+        .signin(credentials)
+        .await
+        .map_err(into_err)?
+        .access
+        .into_insecure_token();
     *state.token.lock().unwrap() = Some(token_str.clone());
     save_token(&app_handle, &token_str)?;
     Ok(token_str)
@@ -70,10 +137,7 @@ pub async fn signin(
 
 /// Clear the current session. Invalidates the token in state and removes it from disk.
 #[tauri::command]
-pub async fn signout(
-    state: State<'_, AppState>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
+pub async fn signout(state: State<'_, AppState>, app_handle: AppHandle) -> Result<(), String> {
     state.db.invalidate().await.map_err(into_err)?;
     *state.token.lock().unwrap() = None;
     clear_token(&app_handle)?;
@@ -89,11 +153,14 @@ pub async fn restore_session(
     state: State<'_, AppState>,
     app_handle: AppHandle,
 ) -> Result<User, String> {
-    let token_str = load_token(&app_handle)?.ok_or_else(|| {
-        AppError::Auth("no saved session".into()).to_string()
-    })?;
+    let token_str = load_token(&app_handle)?
+        .ok_or_else(|| AppError::Auth("no saved session".into()).to_string())?;
 
-    match state.db.authenticate(surrealdb::opt::auth::Token::from(token_str.clone())).await {
+    match state
+        .db
+        .authenticate(surrealdb::opt::auth::Token::from(token_str.clone()))
+        .await
+    {
         Ok(_) => {
             *state.token.lock().unwrap() = Some(token_str);
 
@@ -105,7 +172,9 @@ pub async fn restore_session(
                 .take(0)
                 .map_err(into_err)?;
 
-            result.pop().ok_or_else(|| into_err(AppError::Auth("session restored but $auth not set".into())))
+            result.pop().ok_or_else(|| {
+                into_err(AppError::Auth("session restored but $auth not set".into()))
+            })
         }
         Err(_) => {
             let _ = clear_token(&app_handle);
@@ -126,7 +195,9 @@ pub async fn get_me(state: State<'_, AppState>) -> Result<User, String> {
         .take(0)
         .map_err(into_err)?;
 
-    result.pop().ok_or_else(|| into_err(AppError::Auth("not authenticated".into())))
+    result
+        .pop()
+        .ok_or_else(|| into_err(AppError::Auth("not authenticated".into())))
 }
 
 /// Update mutable profile fields. Only provided fields are changed.
@@ -136,6 +207,11 @@ pub async fn update_profile(
     username: Option<String>,
     avatar: Option<String>,
 ) -> Result<User, String> {
+    if let Some(username) = &username {
+        validate_username(username)?;
+    }
+    validate_avatar(&avatar)?;
+
     let mut result: Vec<User> = state
         .db
         .query(
@@ -144,14 +220,46 @@ pub async fn update_profile(
                 avatar   = $avatar   ?? avatar
              RETURN AFTER",
         )
-        .bind(("username", username))
-        .bind(("avatar", avatar))
+        .bind(("username", username.map(|s| s.trim().to_string())))
+        .bind((
+            "avatar",
+            avatar
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        ))
         .await
         .map_err(into_err)?
         .take(0)
         .map_err(into_err)?;
 
-    result.pop().ok_or_else(|| into_err(AppError::NotFound("user".into())))
+    result
+        .pop()
+        .ok_or_else(|| into_err(AppError::NotFound("user".into())))
+}
+
+/// Search users by username. Returns safe profile fields only.
+#[tauri::command]
+pub async fn search_users(state: State<'_, AppState>, query: String) -> Result<Vec<User>, String> {
+    let query = query.trim();
+    if query.chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let result: Vec<User> = state
+        .db
+        .query(
+            "SELECT id, username, email, avatar, created FROM user
+             WHERE id != $auth AND string::lowercase(username) CONTAINS string::lowercase($query)
+             ORDER BY username
+             LIMIT 10",
+        )
+        .bind(("query", query.to_string()))
+        .await
+        .map_err(into_err)?
+        .take(0)
+        .map_err(into_err)?;
+
+    Ok(result)
 }
 
 /// Return the contacts list for the current user.
@@ -159,7 +267,11 @@ pub async fn update_profile(
 pub async fn get_contacts(state: State<'_, AppState>) -> Result<Vec<User>, String> {
     let result: Vec<User> = state
         .db
-        .query("SELECT target.* FROM contact WHERE owner = $auth")
+        .query(
+            "SELECT * FROM user
+             WHERE id IN (SELECT VALUE target FROM contact WHERE owner = $auth)
+             ORDER BY username",
+        )
         .await
         .map_err(into_err)?
         .take(0)
@@ -170,10 +282,7 @@ pub async fn get_contacts(state: State<'_, AppState>) -> Result<Vec<User>, Strin
 
 /// Add a user to the current user's contact list.
 #[tauri::command]
-pub async fn add_contact(
-    state: State<'_, AppState>,
-    user_id: String,
-) -> Result<Contact, String> {
+pub async fn add_contact(state: State<'_, AppState>, user_id: String) -> Result<Contact, String> {
     let mut result: Vec<Contact> = state
         .db
         .query("CREATE contact SET owner = $auth, target = type::record('user', $uid)")
@@ -183,7 +292,9 @@ pub async fn add_contact(
         .take(0)
         .map_err(into_err)?;
 
-    result.pop().ok_or_else(|| into_err(AppError::NotFound("contact after create".into())))
+    result
+        .pop()
+        .ok_or_else(|| into_err(AppError::NotFound("contact after create".into())))
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -196,7 +307,9 @@ fn save_token(app: &AppHandle, token: &str) -> Result<(), String> {
 
 fn load_token(app: &AppHandle) -> Result<Option<String>, String> {
     let store = app.store(SESSION_STORE).map_err(|e| e.to_string())?;
-    Ok(store.get(TOKEN_KEY).and_then(|v| v.as_str().map(String::from)))
+    Ok(store
+        .get(TOKEN_KEY)
+        .and_then(|v| v.as_str().map(String::from)))
 }
 
 fn clear_token(app: &AppHandle) -> Result<(), String> {

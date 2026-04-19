@@ -49,6 +49,7 @@
   bind:this={menuEl}
   style="left:{x}px; top:{y}px"
   onclick={(e) => e.stopPropagation()}
+  onkeydown={(e) => e.stopPropagation()}
   oncontextmenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
   role="menu"
 >
