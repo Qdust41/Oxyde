@@ -38,6 +38,13 @@ pub struct RoomMember {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct MessageSnippet {
+    pub id: RecordId,
+    pub author_username: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct Message {
     pub id: RecordId,
     pub room: RecordId,
@@ -48,6 +55,7 @@ pub struct Message {
     pub updated: Option<Datetime>,
     pub deleted: Option<bool>,
     pub reply_to: Option<RecordId>,
+    pub replied_to_message: Option<MessageSnippet>,
     pub reactions: Option<Vec<MessageReactionSummary>>,
 }
 

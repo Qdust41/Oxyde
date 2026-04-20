@@ -203,7 +203,11 @@
                     {/if}
                     {#if msg.reply_to}
                         <div class="reply-chip">
-                            replying to {sid(msg.reply_to)}
+                            {#if msg.replied_to_message}
+                                replying to {msg.replied_to_message.author_username ?? 'unknown'}: {msg.replied_to_message.body.length > 80 ? msg.replied_to_message.body.slice(0, 80) + '…' : msg.replied_to_message.body}
+                            {:else}
+                                replying to message
+                            {/if}
                         </div>
                     {/if}
                     {#if !msg.deleted}

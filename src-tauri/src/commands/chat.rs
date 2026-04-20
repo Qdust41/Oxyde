@@ -8,7 +8,10 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::error::{into_err, AppError};
-use crate::models::{Message, MessageReaction, MessageReactionSummary, Room, User};
+use surrealdb::engine::remote::ws::Client;
+use surrealdb::Surreal;
+
+use crate::models::{Message, MessageReaction, MessageReactionSummary, MessageSnippet, Room, User};
 use crate::AppState;
 
 const DEFAULT_PAGE_SIZE: i64 = 50;
@@ -160,6 +163,22 @@ async fn hydrate_reactions(
         message.reactions = Some(summaries);
     }
 
+    Ok(())
+}
+
+async fn hydrate_replies(db: &Surreal<Client>, messages: &mut [Message]) -> Result<(), String> {
+    for message in messages.iter_mut() {
+        if let Some(reply_to_id) = &message.reply_to {
+            let mut result: Vec<MessageSnippet> = db
+                .query("SELECT id, author_username, body FROM message WHERE id = $id")
+                .bind(("id", reply_to_id.clone()))
+                .await
+                .map_err(into_err)?
+                .take(0)
+                .map_err(into_err)?;
+            message.replied_to_message = result.pop();
+        }
+    }
     Ok(())
 }
 
@@ -442,9 +461,12 @@ pub async fn send_message(
         .take(0)
         .map_err(into_err)?;
 
-    result
+    let mut msg = result
         .pop()
-        .ok_or_else(|| into_err(AppError::NotFound("message after create".into())))
+        .ok_or_else(|| into_err(AppError::NotFound("message after create".into())))?;
+
+    hydrate_replies(&state.db, std::slice::from_mut(&mut msg)).await?;
+    Ok(msg)
 }
 
 /// Return cached messages for a room without hitting the remote DB.
@@ -504,9 +526,15 @@ pub async fn get_messages(
     result.reverse();
     let user = current_user(&state).await?;
     hydrate_reactions(&state, &user, &mut result).await?;
+    hydrate_replies(&state.db, &mut result).await?;
 
     if before.is_none() {
-        cache_put(&state.msg_cache, &state.cache_order, &room_id, result.clone());
+        cache_put(
+            &state.msg_cache,
+            &state.cache_order,
+            &room_id,
+            result.clone(),
+        );
     } else {
         let mut c = state.msg_cache.lock().unwrap();
         if let Some(existing) = c.get_mut(&room_id) {
@@ -641,7 +669,11 @@ pub async fn subscribe_room(
     let handle = tokio::spawn(async move {
         while let Some(Ok(notification)) = stream.next().await {
             let action = format!("{:?}", notification.action);
-            let data = notification.data.clone();
+            let mut data = notification.data.clone();
+
+            if data.reply_to.is_some() {
+                let _ = hydrate_replies(&db, std::slice::from_mut(&mut data)).await;
+            }
 
             {
                 let mut c = msg_cache.lock().unwrap();
@@ -673,7 +705,7 @@ pub async fn subscribe_room(
                 "chat:message",
                 &LiveMessageEvent {
                     action,
-                    data: &notification.data,
+                    data: &data,
                 },
             );
         }
