@@ -154,7 +154,9 @@
         replyTo = null;
 
         if (previousSubId) {
-            await cmd("unsubscribe_room", { subId: previousSubId }).catch(() => {});
+            await cmd("unsubscribe_room", { subId: previousSubId }).catch(
+                () => {},
+            );
         }
         if (previousUnlisten) {
             previousUnlisten();
@@ -186,41 +188,53 @@
         }
         subId = nextSubId;
         const { listen } = await import("@tauri-apps/api/event");
-        const nextUnlisten = await listen<LiveEvent>("chat:message", ({ payload }) => {
-            const { action, data } = payload;
-            const eventRoomId = sid(data.room);
-            const currentRoomId = activeRoom ? sid(activeRoom.id) : "";
-            if (eventRoomId !== currentRoomId) {
-                unreadCounts = {
-                    ...unreadCounts,
-                    [eventRoomId]: (unreadCounts[eventRoomId] ?? 0) + 1,
-                };
-                if (
-                    "Notification" in window &&
-                    Notification.permission === "granted" &&
-                    document.hidden
-                ) {
-                    new Notification(data.author_username ?? "New message", {
-                        body: data.body || "New message",
-                    });
+        const nextUnlisten = await listen<LiveEvent>(
+            "chat:message",
+            ({ payload }) => {
+                const { action, data } = payload;
+                const eventRoomId = sid(data.room);
+                const currentRoomId = activeRoom ? sid(activeRoom.id) : "";
+                if (eventRoomId !== currentRoomId) {
+                    unreadCounts = {
+                        ...unreadCounts,
+                        [eventRoomId]: (unreadCounts[eventRoomId] ?? 0) + 1,
+                    };
+                    if (
+                        "Notification" in window &&
+                        Notification.permission === "granted" &&
+                        document.hidden
+                    ) {
+                        new Notification(
+                            data.author_username ?? "New message",
+                            {
+                                body: data.body || "New message",
+                            },
+                        );
+                    }
+                    return;
                 }
-                return;
-            }
-            if (action === "Create") {
-                messages = [...messages, data];
-            } else if (action === "Delete") {
-                messages = messages.filter((m) => full(m.id) !== full(data.id));
-            } else if (action === "Update") {
-                messages = messages.map((m) =>
-                    full(m.id) === full(data.id) ? data : m,
+                if (action === "Create") {
+                    messages = [...messages, data];
+                } else if (action === "Delete") {
+                    messages = messages.filter(
+                        (m) => full(m.id) !== full(data.id),
+                    );
+                } else if (action === "Update") {
+                    messages = messages.map((m) =>
+                        full(m.id) === full(data.id) ? data : m,
+                    );
+                }
+                cmd("mark_room_read", { roomId: currentRoomId }).catch(
+                    () => {},
                 );
-            }
-            cmd("mark_room_read", { roomId: currentRoomId }).catch(() => {});
-        });
+            },
+        );
         if (!isCurrentRoomSelection(token, roomId)) {
             nextUnlisten();
             if (subId === nextSubId) {
-                await cmd("unsubscribe_room", { subId: nextSubId }).catch(() => {});
+                await cmd("unsubscribe_room", { subId: nextSubId }).catch(
+                    () => {},
+                );
                 subId = null;
             }
             return;
