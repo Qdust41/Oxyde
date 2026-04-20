@@ -1,6 +1,6 @@
 [package]
 name = "oxyde"
-version = "0.1.3"
+version = "0.1.4"
 description = "A simple Tauri chat app, built with rust, vite, and surrealdb"
 authors = ["qdust41"]
 edition = "2021"
